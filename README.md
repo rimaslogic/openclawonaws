@@ -1,77 +1,115 @@
 # OpenClaw on AWS
 
-Secure, production-ready deployment of [OpenClaw](https://github.com/openclaw/openclaw) AI assistant on AWS infrastructure.
+Deploy [OpenClaw](https://github.com/openclaw/openclaw) AI assistant on AWS with Terraform.
 
-## Features
+## 🚀 Two Deployment Options
 
-- 🔒 **Security-first architecture** — No SSH, SSM-only access, encrypted everything
-- 🏗️ **Infrastructure as Code** — Complete Terraform configuration
-- 📖 **Comprehensive documentation** — Architecture, implementation guide, DevOps automation
-- 💰 **Cost-optimized** — Options for ~$73/month (full) or ~$40/month (budget)
+| | Simple | Full |
+|--|--------|------|
+| **Cost** | ~$18/month | ~$120/month |
+| **Best for** | Single user | Production/Teams |
+| **Setup** | 30 minutes | 1 hour |
+| **Security** | Good | Maximum |
 
-## Quick Start
+### Quick Start
 
 ```bash
-cd terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your values
+# Clone the repo
+git clone https://github.com/rimaslogic/openclawonaws.git
+cd openclawonaws/terraform
 
+# Choose your deployment:
+cd simple    # For single user (~$18/month)
+# OR
+cd full      # For production (~$120/month)
+
+# Deploy
+cp terraform.tfvars.example terraform.tfvars
+# Edit terraform.tfvars with your domain
 terraform init
-terraform plan
 terraform apply
 ```
 
-See [terraform/README.md](terraform/README.md) for detailed deployment instructions.
+---
+
+## Option 1: Simple (~$18/month)
+
+Perfect for personal use with a single Telegram account.
+
+```
+Internet → EC2 (Caddy + Let's Encrypt) → OpenClaw
+```
+
+**Includes:**
+- EC2 t3.micro with Elastic IP
+- Automatic HTTPS via Caddy
+- Encrypted EBS storage
+- Secrets Manager
+- SSM access (no SSH needed)
+
+[📖 Simple Deployment Guide](terraform/simple/README.md)
+
+---
+
+## Option 2: Full (~$120/month)
+
+Production-grade with maximum security.
+
+```
+Internet → WAF → ALB → Private Subnet → EC2
+                              ↓
+                        VPC Endpoints
+```
+
+**Includes everything in Simple, plus:**
+- WAF with rate limiting
+- Application Load Balancer
+- Private subnet isolation
+- VPC Endpoints for AWS services
+- 365-day log retention
+- ALB access logging
+
+[📖 Full Deployment Guide](terraform/full/README.md)
+
+---
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [architecture.md](architecture.md) | Security-focused AWS architecture design |
-| [implementation-path.md](implementation-path.md) | Step-by-step deployment guide |
-| [devops-mcp.md](devops-mcp.md) | AI-powered DevOps automation with AWS MCP servers |
-| [terraform/README.md](terraform/README.md) | Terraform deployment guide |
+| [terraform/README.md](terraform/README.md) | Deployment comparison & decision guide |
+| [architecture.md](architecture.md) | Full security architecture |
+| [implementation-path.md](implementation-path.md) | Step-by-step guide |
+| [devops-mcp.md](devops-mcp.md) | AI-powered DevOps automation |
+| [SECURITY-REPORT.md](SECURITY-REPORT.md) | Checkov scan results |
 
-## Architecture Overview
-
-```
-Internet → ALB (HTTPS/TLS 1.3) → Private Subnet → EC2 (OpenClaw)
-                                                      ↓
-                                               Secrets Manager
-                                               CloudWatch Logs
-                                               S3 Backups
-```
-
-## Security Controls
-
-| Control | Implementation |
-|---------|----------------|
-| No SSH access | SSM Session Manager only |
-| Encryption at rest | KMS-managed (EBS, S3, Secrets) |
-| Encryption in transit | TLS 1.3 via ALB |
-| Network isolation | Private subnet, VPC endpoints |
-| Secrets management | AWS Secrets Manager |
-| Audit logging | VPC Flow Logs, CloudTrail |
-| Instance hardening | IMDSv2 required |
-
-## Cost Estimate
-
-| Tier | Monthly Cost | Notes |
-|------|--------------|-------|
-| Full | ~$73 | Private subnet, NAT Gateway, ALB |
-| Budget | ~$40 | Disable NAT Gateway |
+---
 
 ## Prerequisites
 
-- AWS account with admin access
-- Domain name for HTTPS
+- AWS account
+- Domain name (for HTTPS)
 - Terraform >= 1.5.0
 - AWS CLI configured
 
+---
+
+## Security Features
+
+Both deployments include:
+- ✅ Encrypted storage (KMS)
+- ✅ Secrets in AWS Secrets Manager
+- ✅ IMDSv2 required
+- ✅ SSM Session Manager (no SSH)
+
+Full deployment adds:
+- ✅ WAF protection
+- ✅ Private subnet
+- ✅ VPC Endpoints
+- ✅ ALB with access logging
+
+---
+
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## Contributing
-
-Contributions welcome! Please read the architecture documentation before submitting changes.
+MIT License - see [LICENSE](LICENSE)
