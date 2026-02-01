@@ -79,7 +79,13 @@ echo ""
 echo "Checking your AWS credentials..."
 echo ""
 
-if ! AWS_IDENTITY=$(aws sts get-caller-identity 2>&1); then
+# Try to get current identity
+set +e
+AWS_IDENTITY=$(aws sts get-caller-identity 2>&1)
+AWS_CHECK=$?
+set -e
+
+if [ $AWS_CHECK -ne 0 ]; then
     echo -e "${RED}✗ Cannot access AWS account${NC}"
     echo ""
     echo "Error: $AWS_IDENTITY"
@@ -105,6 +111,9 @@ echo "  3) Assume role in a different account"
 echo ""
 read -p "Choose [1-3, default 1]: " ACCOUNT_CHOICE
 
+#-----------------------------------------------------------------------
+# Option 2: Use a different AWS profile
+#-----------------------------------------------------------------------
 if [ "$ACCOUNT_CHOICE" = "2" ]; then
     echo ""
     echo -e "${BLUE}AWS Profile Selection${NC}"
@@ -112,14 +121,21 @@ if [ "$ACCOUNT_CHOICE" = "2" ]; then
     
     # List available profiles
     echo "Available profiles:"
+    PROFILES=""
     if [ -f ~/.aws/credentials ]; then
-        grep '^\[' ~/.aws/credentials | tr -d '[]' | while read profile; do
-            echo "  • $profile"
-        done
+        PROFILES=$(grep '^\[' ~/.aws/credentials | tr -d '[]')
     fi
     if [ -f ~/.aws/config ]; then
-        grep '^\[profile ' ~/.aws/config | sed 's/\[profile /  • /' | tr -d ']'
+        CONFIG_PROFILES=$(grep '^\[profile ' ~/.aws/config | sed 's/\[profile //' | tr -d ']')
+        PROFILES="$PROFILES $CONFIG_PROFILES"
     fi
+    
+    # Remove duplicates and print
+    echo "$PROFILES" | tr ' ' '\n' | sort -u | while read -r profile; do
+        if [ -n "$profile" ]; then
+            echo "  • $profile"
+        fi
+    done
     echo ""
     
     read -p "Enter profile name: " AWS_PROFILE_NAME
@@ -132,99 +148,118 @@ if [ "$ACCOUNT_CHOICE" = "2" ]; then
     export AWS_PROFILE="$AWS_PROFILE_NAME"
     
     echo ""
-    echo "Verifying profile access..."
+    echo "Verifying profile '$AWS_PROFILE_NAME'..."
+    echo ""
     
+    # Try to get identity with the profile
+    set +e
     NEW_IDENTITY=$(aws sts get-caller-identity 2>&1)
     IDENTITY_RESULT=$?
+    set -e
     
-    # Check if MFA is required (common error patterns)
+    # If failed, check if MFA might be needed
     if [ $IDENTITY_RESULT -ne 0 ]; then
-        if echo "$NEW_IDENTITY" | grep -qi "mfa\|token\|session"; then
-            echo -e "${YELLOW}This profile may require MFA authentication.${NC}"
-            echo ""
+        echo -e "${YELLOW}Profile verification failed.${NC}"
+        echo "Error: $NEW_IDENTITY"
+        echo ""
+        
+        # Check if it's an MFA-related error
+        if echo "$NEW_IDENTITY" | grep -qiE "mfa|token|session|accessdenied"; then
+            echo "This might require MFA. Do you want to authenticate with MFA? [y/N]: "
+            read -p "" USE_MFA
             
-            # Get MFA device
-            echo "Detecting MFA devices..."
-            
-            # Temporarily unset profile to check MFA devices with base credentials
-            TEMP_PROFILE="$AWS_PROFILE"
-            unset AWS_PROFILE
-            MFA_DEVICES=$(aws iam list-mfa-devices --query 'MFADevices[*].SerialNumber' --output text 2>/dev/null || echo "")
-            export AWS_PROFILE="$TEMP_PROFILE"
-            
-            if [ -n "$MFA_DEVICES" ] && [ "$MFA_DEVICES" != "None" ]; then
-                echo "Found MFA device(s):"
-                echo "$MFA_DEVICES" | tr '\t' '\n' | while read device; do
-                    echo "  • $device"
-                done
+            if [[ $USE_MFA =~ ^[Yy]$ ]]; then
+                echo ""
+                # Need to get MFA device - use default profile temporarily
+                unset AWS_PROFILE
+                
+                echo "Detecting MFA devices for your user..."
+                set +e
+                MFA_DEVICES=$(aws iam list-mfa-devices --query 'MFADevices[*].SerialNumber' --output text 2>/dev/null)
+                set -e
+                
+                if [ -n "$MFA_DEVICES" ] && [ "$MFA_DEVICES" != "None" ]; then
+                    echo "Found MFA device(s):"
+                    echo "$MFA_DEVICES" | tr '\t' '\n' | while read -r device; do
+                        [ -n "$device" ] && echo "  • $device"
+                    done
+                    echo ""
+                    
+                    # Use first device if only one
+                    FIRST_DEVICE=$(echo "$MFA_DEVICES" | awk '{print $1}')
+                    read -p "MFA device ARN [$FIRST_DEVICE]: " MFA_SERIAL
+                    MFA_SERIAL="${MFA_SERIAL:-$FIRST_DEVICE}"
+                else
+                    echo "Could not auto-detect MFA device."
+                    echo "Format: arn:aws:iam::ACCOUNT_ID:mfa/USERNAME"
+                    read -p "MFA device ARN: " MFA_SERIAL
+                fi
+                
+                if [ -z "$MFA_SERIAL" ]; then
+                    echo -e "${RED}Error: MFA device ARN is required${NC}"
+                    exit 1
+                fi
+                
+                read -p "Enter MFA code (6 digits): " MFA_CODE
+                
+                if [ -z "$MFA_CODE" ]; then
+                    echo -e "${RED}Error: MFA code is required${NC}"
+                    exit 1
+                fi
+                
+                echo ""
+                echo "Getting session credentials with MFA..."
+                
+                set +e
+                SESSION_CREDS=$(aws sts get-session-token \
+                    --serial-number "$MFA_SERIAL" \
+                    --token-code "$MFA_CODE" \
+                    --duration-seconds 3600 2>&1)
+                SESSION_RESULT=$?
+                set -e
+                
+                if [ $SESSION_RESULT -ne 0 ]; then
+                    echo -e "${RED}✗ Failed to get session token${NC}"
+                    echo "Error: $SESSION_CREDS"
+                    exit 1
+                fi
+                
+                # Export the session credentials
+                export AWS_ACCESS_KEY_ID=$(echo "$SESSION_CREDS" | grep -o '"AccessKeyId": "[^"]*"' | cut -d'"' -f4)
+                export AWS_SECRET_ACCESS_KEY=$(echo "$SESSION_CREDS" | grep -o '"SecretAccessKey": "[^"]*"' | cut -d'"' -f4)
+                export AWS_SESSION_TOKEN=$(echo "$SESSION_CREDS" | grep -o '"SessionToken": "[^"]*"' | cut -d'"' -f4)
+                unset AWS_PROFILE
+                
+                EXPIRATION=$(echo "$SESSION_CREDS" | grep -o '"Expiration": "[^"]*"' | cut -d'"' -f4)
+                echo -e "${GREEN}✓ MFA authentication successful${NC}"
+                echo -e "${YELLOW}Session expires: $EXPIRATION${NC}"
                 echo ""
                 
-                DEVICE_COUNT=$(echo "$MFA_DEVICES" | wc -w)
-                if [ "$DEVICE_COUNT" -eq 1 ]; then
-                    MFA_SERIAL="$MFA_DEVICES"
-                    echo -e "Using: ${GREEN}$MFA_SERIAL${NC}"
-                else
-                    read -p "Enter MFA device ARN: " MFA_SERIAL
-                fi
+                # Re-verify
+                NEW_IDENTITY=$(aws sts get-caller-identity)
             else
-                echo "Enter your MFA device ARN:"
-                echo "Format: arn:aws:iam::ACCOUNT_ID:mfa/USERNAME"
-                read -p "MFA ARN: " MFA_SERIAL
-            fi
-            
-            echo ""
-            read -p "Enter MFA code (6 digits): " MFA_CODE
-            
-            if [ -z "$MFA_SERIAL" ] || [ -z "$MFA_CODE" ]; then
-                echo -e "${RED}Error: MFA device and code are required${NC}"
+                echo -e "${RED}Aborted.${NC}"
                 exit 1
             fi
-            
-            echo ""
-            echo "Getting session token with MFA..."
-            
-            # Get session token with MFA
-            unset AWS_PROFILE
-            SESSION_TOKEN=$(aws sts get-session-token \
-                --serial-number "$MFA_SERIAL" \
-                --token-code "$MFA_CODE" \
-                --duration-seconds 3600 2>&1)
-            
-            if [ $? -ne 0 ]; then
-                echo -e "${RED}✗ Failed to get session token${NC}"
-                echo "Error: $SESSION_TOKEN"
-                exit 1
-            fi
-            
-            # Export session credentials
-            export AWS_ACCESS_KEY_ID=$(echo "$SESSION_TOKEN" | grep -o '"AccessKeyId": "[^"]*"' | cut -d'"' -f4)
-            export AWS_SECRET_ACCESS_KEY=$(echo "$SESSION_TOKEN" | grep -o '"SecretAccessKey": "[^"]*"' | cut -d'"' -f4)
-            export AWS_SESSION_TOKEN=$(echo "$SESSION_TOKEN" | grep -o '"SessionToken": "[^"]*"' | cut -d'"' -f4)
-            
-            # Now verify
-            NEW_IDENTITY=$(aws sts get-caller-identity)
-            
-            EXPIRATION=$(echo "$SESSION_TOKEN" | grep -o '"Expiration": "[^"]*"' | cut -d'"' -f4)
-            echo -e "${YELLOW}Note: MFA session expires at $EXPIRATION${NC}"
-            echo ""
         else
-            echo -e "${RED}✗ Cannot access AWS with profile '$AWS_PROFILE_NAME'${NC}"
-            echo ""
-            echo "Error: $NEW_IDENTITY"
+            echo -e "${RED}Cannot use this profile. Please check configuration.${NC}"
             exit 1
         fi
     fi
     
+    # Parse the identity
     AWS_ACCOUNT_ID=$(echo "$NEW_IDENTITY" | grep -o '"Account": "[^"]*"' | cut -d'"' -f4)
     AWS_USER_ARN=$(echo "$NEW_IDENTITY" | grep -o '"Arn": "[^"]*"' | cut -d'"' -f4)
     AWS_USER=$(echo "$AWS_USER_ARN" | rev | cut -d'/' -f1 | rev)
     
-    echo -e "${GREEN}✓ Profile '$AWS_PROFILE_NAME' verified${NC}"
-    echo ""
+    echo -e "${GREEN}✓ Profile verified${NC}"
     echo -e "  Account:  ${GREEN}$AWS_ACCOUNT_ID${NC}"
     echo -e "  User:     ${GREEN}$AWS_USER${NC}"
     echo ""
 
+#-----------------------------------------------------------------------
+# Option 3: Assume role in a different account
+#-----------------------------------------------------------------------
 elif [ "$ACCOUNT_CHOICE" = "3" ]; then
     echo ""
     echo -e "${BLUE}Assume Role Configuration${NC}"
@@ -239,51 +274,36 @@ elif [ "$ACCOUNT_CHOICE" = "3" ]; then
         exit 1
     fi
     
-    # Optional: External ID
     echo ""
-    echo "External ID (leave empty if not required):"
-    read -p "External ID: " EXTERNAL_ID
+    read -p "External ID (leave empty if not required): " EXTERNAL_ID
     
-    # Check if MFA is needed
     echo ""
-    echo "Does this role require MFA? [y/N]:"
-    read -p "MFA required: " MFA_REQUIRED
+    read -p "Does this role require MFA? [y/N]: " MFA_REQUIRED
     
-    MFA_SERIAL=""
-    MFA_CODE=""
+    MFA_ARGS=""
     
     if [[ $MFA_REQUIRED =~ ^[Yy]$ ]]; then
         echo ""
-        echo -e "${BLUE}MFA Configuration${NC}"
-        echo ""
-        
-        # Try to detect MFA devices
         echo "Detecting MFA devices..."
-        MFA_DEVICES=$(aws iam list-mfa-devices --query 'MFADevices[*].SerialNumber' --output text 2>/dev/null || echo "")
+        
+        set +e
+        MFA_DEVICES=$(aws iam list-mfa-devices --query 'MFADevices[*].SerialNumber' --output text 2>/dev/null)
+        set -e
         
         if [ -n "$MFA_DEVICES" ] && [ "$MFA_DEVICES" != "None" ]; then
-            echo ""
             echo "Found MFA device(s):"
-            echo "$MFA_DEVICES" | tr '\t' '\n' | while read device; do
-                echo "  • $device"
+            echo "$MFA_DEVICES" | tr '\t' '\n' | while read -r device; do
+                [ -n "$device" ] && echo "  • $device"
             done
             echo ""
             
-            # If only one device, use it automatically
-            DEVICE_COUNT=$(echo "$MFA_DEVICES" | wc -w)
-            if [ "$DEVICE_COUNT" -eq 1 ]; then
-                MFA_SERIAL="$MFA_DEVICES"
-                echo -e "Using: ${GREEN}$MFA_SERIAL${NC}"
-            else
-                read -p "Enter MFA device ARN: " MFA_SERIAL
-            fi
+            FIRST_DEVICE=$(echo "$MFA_DEVICES" | awk '{print $1}')
+            read -p "MFA device ARN [$FIRST_DEVICE]: " MFA_SERIAL
+            MFA_SERIAL="${MFA_SERIAL:-$FIRST_DEVICE}"
         else
-            echo ""
             echo "Could not auto-detect MFA device."
-            echo "Enter your MFA device ARN."
             echo "Format: arn:aws:iam::ACCOUNT_ID:mfa/USERNAME"
-            echo ""
-            read -p "MFA ARN: " MFA_SERIAL
+            read -p "MFA device ARN: " MFA_SERIAL
         fi
         
         if [ -z "$MFA_SERIAL" ]; then
@@ -291,14 +311,14 @@ elif [ "$ACCOUNT_CHOICE" = "3" ]; then
             exit 1
         fi
         
-        echo ""
-        echo "Enter the 6-digit code from your MFA device:"
-        read -p "MFA Code: " MFA_CODE
+        read -p "Enter MFA code (6 digits): " MFA_CODE
         
         if [ -z "$MFA_CODE" ]; then
             echo -e "${RED}Error: MFA code is required${NC}"
             exit 1
         fi
+        
+        MFA_ARGS="--serial-number $MFA_SERIAL --token-code $MFA_CODE"
     fi
     
     SESSION_NAME="openclaw-setup-$(date +%s)"
@@ -306,63 +326,50 @@ elif [ "$ACCOUNT_CHOICE" = "3" ]; then
     echo ""
     echo "Assuming role..."
     
-    # Build assume-role command
+    # Build command
     ASSUME_CMD="aws sts assume-role --role-arn $ROLE_ARN --role-session-name $SESSION_NAME"
+    [ -n "$EXTERNAL_ID" ] && ASSUME_CMD="$ASSUME_CMD --external-id $EXTERNAL_ID"
+    [ -n "$MFA_ARGS" ] && ASSUME_CMD="$ASSUME_CMD $MFA_ARGS"
     
-    if [ -n "$EXTERNAL_ID" ]; then
-        ASSUME_CMD="$ASSUME_CMD --external-id $EXTERNAL_ID"
-    fi
+    set +e
+    ASSUMED_ROLE=$(eval $ASSUME_CMD 2>&1)
+    ASSUME_RESULT=$?
+    set -e
     
-    if [ -n "$MFA_SERIAL" ] && [ -n "$MFA_CODE" ]; then
-        ASSUME_CMD="$ASSUME_CMD --serial-number $MFA_SERIAL --token-code $MFA_CODE"
-    fi
-    
-    # Assume the role
-    if ! ASSUMED_ROLE=$($ASSUME_CMD 2>&1); then
+    if [ $ASSUME_RESULT -ne 0 ]; then
         echo -e "${RED}✗ Failed to assume role${NC}"
         echo ""
         echo "Error: $ASSUMED_ROLE"
-        echo ""
-        
-        # Check if MFA error
-        if echo "$ASSUMED_ROLE" | grep -qi "mfa"; then
-            echo -e "${YELLOW}Hint: This role may require MFA. Re-run and select 'y' for MFA.${NC}"
-        fi
-        
         echo ""
         echo "Common issues:"
         echo "  • Role ARN is incorrect"
         echo "  • Trust policy doesn't allow your account/user"
         echo "  • External ID is required but not provided"
-        echo "  • MFA is required but not provided"
-        echo "  • MFA code is expired or incorrect"
+        echo "  • MFA is required but not provided or incorrect"
         exit 1
     fi
     
-    # Extract credentials
+    # Extract and export credentials
     export AWS_ACCESS_KEY_ID=$(echo "$ASSUMED_ROLE" | grep -o '"AccessKeyId": "[^"]*"' | cut -d'"' -f4)
     export AWS_SECRET_ACCESS_KEY=$(echo "$ASSUMED_ROLE" | grep -o '"SecretAccessKey": "[^"]*"' | cut -d'"' -f4)
     export AWS_SESSION_TOKEN=$(echo "$ASSUMED_ROLE" | grep -o '"SessionToken": "[^"]*"' | cut -d'"' -f4)
     
-    # Verify new identity
+    # Get new identity
     NEW_IDENTITY=$(aws sts get-caller-identity)
     AWS_ACCOUNT_ID=$(echo "$NEW_IDENTITY" | grep -o '"Account": "[^"]*"' | cut -d'"' -f4)
     AWS_USER_ARN=$(echo "$NEW_IDENTITY" | grep -o '"Arn": "[^"]*"' | cut -d'"' -f4)
     AWS_USER=$(echo "$AWS_USER_ARN" | rev | cut -d'/' -f1 | rev)
     
-    echo -e "${GREEN}✓ Role assumed successfully${NC}"
-    echo ""
-    echo -e "  Target Account:  ${GREEN}$AWS_ACCOUNT_ID${NC}"
-    echo -e "  Assumed Role:    ${GREEN}$AWS_USER${NC}"
-    echo ""
-    
-    # Note about session expiration
     EXPIRATION=$(echo "$ASSUMED_ROLE" | grep -o '"Expiration": "[^"]*"' | cut -d'"' -f4)
-    echo -e "${YELLOW}Note: Session expires at $EXPIRATION${NC}"
+    
+    echo -e "${GREEN}✓ Role assumed successfully${NC}"
+    echo -e "  Account:  ${GREEN}$AWS_ACCOUNT_ID${NC}"
+    echo -e "  Role:     ${GREEN}$AWS_USER${NC}"
+    echo -e "${YELLOW}Session expires: $EXPIRATION${NC}"
     echo ""
 fi
 
-echo -e "${YELLOW}⚠️  IMPORTANT: This wizard will create AWS resources in account $AWS_ACCOUNT_ID${NC}"
+echo -e "${YELLOW}⚠️  Resources will be created in account $AWS_ACCOUNT_ID${NC}"
 echo ""
 echo "Resources to be created:"
 echo "  • 1 VPC with public subnet"
@@ -419,13 +426,15 @@ EXISTING_ISSUES=()
 
 # Check for existing VPC with openclaw name
 echo -n "  Checking VPCs... "
+set +e
 EXISTING_VPC=$(aws ec2 describe-vpcs \
     --filters "Name=tag:Name,Values=*openclaw*" \
     --region "$AWS_REGION" \
     --query 'Vpcs[0].VpcId' \
-    --output text 2>/dev/null || echo "None")
+    --output text 2>/dev/null)
+set -e
 
-if [ "$EXISTING_VPC" != "None" ] && [ -n "$EXISTING_VPC" ]; then
+if [ -n "$EXISTING_VPC" ] && [ "$EXISTING_VPC" != "None" ]; then
     echo -e "${YELLOW}Found: $EXISTING_VPC${NC}"
     EXISTING_ISSUES+=("VPC: $EXISTING_VPC")
 else
@@ -434,13 +443,15 @@ fi
 
 # Check for existing EC2 instances
 echo -n "  Checking EC2 instances... "
+set +e
 EXISTING_EC2=$(aws ec2 describe-instances \
     --filters "Name=tag:Name,Values=*openclaw*" "Name=instance-state-name,Values=running,stopped" \
     --region "$AWS_REGION" \
     --query 'Reservations[0].Instances[0].InstanceId' \
-    --output text 2>/dev/null || echo "None")
+    --output text 2>/dev/null)
+set -e
 
-if [ "$EXISTING_EC2" != "None" ] && [ -n "$EXISTING_EC2" ]; then
+if [ -n "$EXISTING_EC2" ] && [ "$EXISTING_EC2" != "None" ]; then
     echo -e "${YELLOW}Found: $EXISTING_EC2${NC}"
     EXISTING_ISSUES+=("EC2: $EXISTING_EC2")
 else
@@ -449,9 +460,11 @@ fi
 
 # Check for existing IAM role
 echo -n "  Checking IAM roles... "
-EXISTING_ROLE=$(aws iam get-role --role-name openclaw-ec2-role --query 'Role.RoleName' --output text 2>/dev/null || echo "None")
+set +e
+EXISTING_ROLE=$(aws iam get-role --role-name openclaw-ec2-role --query 'Role.RoleName' --output text 2>/dev/null)
+set -e
 
-if [ "$EXISTING_ROLE" != "None" ] && [ -n "$EXISTING_ROLE" ]; then
+if [ -n "$EXISTING_ROLE" ] && [ "$EXISTING_ROLE" != "None" ]; then
     echo -e "${YELLOW}Found: $EXISTING_ROLE${NC}"
     EXISTING_ISSUES+=("IAM Role: $EXISTING_ROLE")
 else
@@ -555,7 +568,7 @@ EOF
 echo "  Initializing Terraform..."
 terraform init -input=false > /dev/null 2>&1
 
-# Plan and show what will be created
+# Plan
 echo "  Planning deployment..."
 terraform plan -input=false -out=tfplan > /dev/null 2>&1
 
@@ -625,18 +638,20 @@ COMMAND_ID=$(aws ssm send-command \
 echo "  Applying configuration..."
 sleep 15
 
-# Check if command succeeded
+# Check command status
+set +e
 STATUS=$(aws ssm get-command-invocation \
     --command-id "$COMMAND_ID" \
     --instance-id "$INSTANCE_ID" \
     --region "$AWS_REGION" \
     --query 'Status' \
-    --output text 2>/dev/null || echo "Unknown")
+    --output text 2>/dev/null)
+set -e
 
 if [ "$STATUS" = "Success" ]; then
     echo -e "  ${GREEN}✓ OpenClaw configured and started${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Configuration may still be in progress${NC}"
+    echo -e "  ${YELLOW}⚠ Configuration in progress (Status: $STATUS)${NC}"
 fi
 
 echo ""
@@ -663,7 +678,7 @@ echo ""
 echo "Useful commands:"
 echo ""
 echo "  # Connect to instance"
-echo "  aws ssm start-session --target $INSTANCE_ID"
+echo "  aws ssm start-session --target $INSTANCE_ID --region $AWS_REGION"
 echo ""
 echo "  # View logs"
 echo "  sudo journalctl -u openclaw -f"
