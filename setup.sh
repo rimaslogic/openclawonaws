@@ -264,6 +264,53 @@ elif [ "$ACCOUNT_CHOICE" = "3" ]; then
     echo ""
     echo -e "${BLUE}Assume Role Configuration${NC}"
     echo ""
+    
+    # Ask if user wants to use a different profile as source
+    echo "Do you want to use a specific AWS profile as source credentials?"
+    echo "(Required if your default credentials can't assume the target role)"
+    echo ""
+    read -p "Use a specific profile? [y/N]: " USE_SOURCE_PROFILE
+    
+    if [[ $USE_SOURCE_PROFILE =~ ^[Yy]$ ]]; then
+        echo ""
+        echo "Available profiles:"
+        PROFILES=""
+        if [ -f ~/.aws/credentials ]; then
+            PROFILES=$(grep '^\[' ~/.aws/credentials | tr -d '[]')
+        fi
+        if [ -f ~/.aws/config ]; then
+            CONFIG_PROFILES=$(grep '^\[profile ' ~/.aws/config | sed 's/\[profile //' | tr -d ']')
+            PROFILES="$PROFILES $CONFIG_PROFILES"
+        fi
+        echo "$PROFILES" | tr ' ' '\n' | sort -u | while read -r profile; do
+            [ -n "$profile" ] && echo "  • $profile"
+        done
+        echo ""
+        
+        read -p "Source profile name: " SOURCE_PROFILE
+        
+        if [ -n "$SOURCE_PROFILE" ]; then
+            export AWS_PROFILE="$SOURCE_PROFILE"
+            echo ""
+            echo "Verifying source profile..."
+            
+            set +e
+            SOURCE_IDENTITY=$(aws sts get-caller-identity 2>&1)
+            SOURCE_RESULT=$?
+            set -e
+            
+            if [ $SOURCE_RESULT -ne 0 ]; then
+                echo -e "${RED}✗ Cannot access source profile '$SOURCE_PROFILE'${NC}"
+                echo "Error: $SOURCE_IDENTITY"
+                exit 1
+            fi
+            
+            SOURCE_ACCOUNT=$(echo "$SOURCE_IDENTITY" | grep -o '"Account": "[^"]*"' | cut -d'"' -f4)
+            echo -e "${GREEN}✓ Using source profile '$SOURCE_PROFILE' (Account: $SOURCE_ACCOUNT)${NC}"
+            echo ""
+        fi
+    fi
+    
     echo "Enter the Role ARN to assume."
     echo "Format: arn:aws:iam::TARGET_ACCOUNT_ID:role/ROLE_NAME"
     echo ""
@@ -419,80 +466,154 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${YELLOW}STEP 4/7: Checking for Existing Resources${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "Scanning for existing OpenClaw resources in $AWS_REGION..."
+echo "Scanning account $AWS_ACCOUNT_ID in $AWS_REGION for existing resources..."
 echo ""
 
-EXISTING_ISSUES=()
+EXISTING_RESOURCES=()
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Check for existing VPC with openclaw name
-echo -n "  Checking VPCs... "
+# Check VPCs
+echo -n "  VPCs with 'openclaw' tag... "
 set +e
 EXISTING_VPC=$(aws ec2 describe-vpcs \
     --filters "Name=tag:Name,Values=*openclaw*" \
     --region "$AWS_REGION" \
-    --query 'Vpcs[0].VpcId' \
+    --query 'Vpcs[*].[VpcId,Tags[?Key==`Name`].Value|[0]]' \
     --output text 2>/dev/null)
 set -e
-
 if [ -n "$EXISTING_VPC" ] && [ "$EXISTING_VPC" != "None" ]; then
-    echo -e "${YELLOW}Found: $EXISTING_VPC${NC}"
-    EXISTING_ISSUES+=("VPC: $EXISTING_VPC")
+    echo -e "${YELLOW}Found${NC}"
+    while read -r vpc_id vpc_name; do
+        [ -n "$vpc_id" ] && [ "$vpc_id" != "None" ] && EXISTING_RESOURCES+=("VPC: $vpc_id ($vpc_name)")
+    done <<< "$EXISTING_VPC"
 else
-    echo -e "${GREEN}None found${NC}"
+    echo -e "${GREEN}None${NC}"
 fi
 
-# Check for existing EC2 instances
-echo -n "  Checking EC2 instances... "
+# Check EC2 instances
+echo -n "  EC2 instances with 'openclaw' tag... "
 set +e
 EXISTING_EC2=$(aws ec2 describe-instances \
-    --filters "Name=tag:Name,Values=*openclaw*" "Name=instance-state-name,Values=running,stopped" \
+    --filters "Name=tag:Name,Values=*openclaw*" "Name=instance-state-name,Values=running,stopped,pending" \
     --region "$AWS_REGION" \
-    --query 'Reservations[0].Instances[0].InstanceId' \
+    --query 'Reservations[*].Instances[*].[InstanceId,State.Name,Tags[?Key==`Name`].Value|[0]]' \
     --output text 2>/dev/null)
 set -e
-
 if [ -n "$EXISTING_EC2" ] && [ "$EXISTING_EC2" != "None" ]; then
-    echo -e "${YELLOW}Found: $EXISTING_EC2${NC}"
-    EXISTING_ISSUES+=("EC2: $EXISTING_EC2")
+    echo -e "${YELLOW}Found${NC}"
+    while read -r inst_id state inst_name; do
+        [ -n "$inst_id" ] && [ "$inst_id" != "None" ] && EXISTING_RESOURCES+=("EC2: $inst_id ($inst_name, $state)")
+    done <<< "$EXISTING_EC2"
 else
-    echo -e "${GREEN}None found${NC}"
+    echo -e "${GREEN}None${NC}"
 fi
 
-# Check for existing IAM role
-echo -n "  Checking IAM roles... "
+# Check Security Groups
+echo -n "  Security Groups with 'openclaw' name... "
 set +e
-EXISTING_ROLE=$(aws iam get-role --role-name openclaw-ec2-role --query 'Role.RoleName' --output text 2>/dev/null)
+EXISTING_SG=$(aws ec2 describe-security-groups \
+    --filters "Name=group-name,Values=*openclaw*" \
+    --region "$AWS_REGION" \
+    --query 'SecurityGroups[*].[GroupId,GroupName]' \
+    --output text 2>/dev/null)
 set -e
-
-if [ -n "$EXISTING_ROLE" ] && [ "$EXISTING_ROLE" != "None" ]; then
-    echo -e "${YELLOW}Found: $EXISTING_ROLE${NC}"
-    EXISTING_ISSUES+=("IAM Role: $EXISTING_ROLE")
+if [ -n "$EXISTING_SG" ] && [ "$EXISTING_SG" != "None" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    while read -r sg_id sg_name; do
+        [ -n "$sg_id" ] && [ "$sg_id" != "None" ] && EXISTING_RESOURCES+=("Security Group: $sg_id ($sg_name)")
+    done <<< "$EXISTING_SG"
 else
-    echo -e "${GREEN}None found${NC}"
+    echo -e "${GREEN}None${NC}"
 fi
 
-# Check for existing Terraform state
-echo -n "  Checking local Terraform state... "
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -f "$SCRIPT_DIR/terraform/terraform.tfstate" ]; then
-    echo -e "${YELLOW}Found existing state file${NC}"
-    EXISTING_ISSUES+=("Local Terraform state")
+# Check IAM role
+echo -n "  IAM role 'openclaw-ec2-role'... "
+set +e
+EXISTING_ROLE=$(aws iam get-role --role-name openclaw-ec2-role --query 'Role.Arn' --output text 2>/dev/null)
+set -e
+if [ -n "$EXISTING_ROLE" ] && [ "$EXISTING_ROLE" != "None" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    EXISTING_RESOURCES+=("IAM Role: openclaw-ec2-role")
 else
-    echo -e "${GREEN}None found${NC}"
+    echo -e "${GREEN}None${NC}"
+fi
+
+# Check IAM instance profile
+echo -n "  IAM instance profile 'openclaw-ec2-profile'... "
+set +e
+EXISTING_PROFILE=$(aws iam get-instance-profile --instance-profile-name openclaw-ec2-profile --query 'InstanceProfile.Arn' --output text 2>/dev/null)
+set -e
+if [ -n "$EXISTING_PROFILE" ] && [ "$EXISTING_PROFILE" != "None" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    EXISTING_RESOURCES+=("IAM Instance Profile: openclaw-ec2-profile")
+else
+    echo -e "${GREEN}None${NC}"
+fi
+
+# Check Subnets
+echo -n "  Subnets with 'openclaw' tag... "
+set +e
+EXISTING_SUBNET=$(aws ec2 describe-subnets \
+    --filters "Name=tag:Name,Values=*openclaw*" \
+    --region "$AWS_REGION" \
+    --query 'Subnets[*].[SubnetId,Tags[?Key==`Name`].Value|[0]]' \
+    --output text 2>/dev/null)
+set -e
+if [ -n "$EXISTING_SUBNET" ] && [ "$EXISTING_SUBNET" != "None" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    while read -r subnet_id subnet_name; do
+        [ -n "$subnet_id" ] && [ "$subnet_id" != "None" ] && EXISTING_RESOURCES+=("Subnet: $subnet_id ($subnet_name)")
+    done <<< "$EXISTING_SUBNET"
+else
+    echo -e "${GREEN}None${NC}"
+fi
+
+# Check Internet Gateways
+echo -n "  Internet Gateways with 'openclaw' tag... "
+set +e
+EXISTING_IGW=$(aws ec2 describe-internet-gateways \
+    --filters "Name=tag:Name,Values=*openclaw*" \
+    --region "$AWS_REGION" \
+    --query 'InternetGateways[*].[InternetGatewayId,Tags[?Key==`Name`].Value|[0]]' \
+    --output text 2>/dev/null)
+set -e
+if [ -n "$EXISTING_IGW" ] && [ "$EXISTING_IGW" != "None" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    while read -r igw_id igw_name; do
+        [ -n "$igw_id" ] && [ "$igw_id" != "None" ] && EXISTING_RESOURCES+=("Internet Gateway: $igw_id ($igw_name)")
+    done <<< "$EXISTING_IGW"
+else
+    echo -e "${GREEN}None${NC}"
+fi
+
+# Check local Terraform state
+echo -n "  Local Terraform state file... "
+if [ -f "$SCRIPT_DIR/terraform/terraform.tfstate" ]; then
+    echo -e "${YELLOW}Found${NC}"
+    EXISTING_RESOURCES+=("Local file: terraform.tfstate")
+else
+    echo -e "${GREEN}None${NC}"
 fi
 
 echo ""
 
-if [ ${#EXISTING_ISSUES[@]} -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  WARNING: Existing OpenClaw resources detected:${NC}"
+# Report findings
+if [ ${#EXISTING_RESOURCES[@]} -gt 0 ]; then
+    echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${YELLOW}║  ⚠️  EXISTING RESOURCES FOUND IN ACCOUNT $AWS_ACCOUNT_ID        ${NC}"
+    echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
     echo ""
-    for issue in "${EXISTING_ISSUES[@]}"; do
-        echo "  • $issue"
+    echo "The following resources already exist:"
+    echo ""
+    for resource in "${EXISTING_RESOURCES[@]}"; do
+        echo -e "  ${YELLOW}•${NC} $resource"
     done
     echo ""
+    echo -e "${RED}WARNING: Proceeding may MODIFY or REPLACE these resources!${NC}"
+    echo ""
     echo "Options:"
-    echo "  1) Continue anyway (may update/replace existing resources)"
-    echo "  2) Abort (make no changes)"
+    echo "  1) Continue - I understand existing resources may be modified"
+    echo "  2) Abort - Do not make any changes"
     echo ""
     read -p "Choose [1-2]: " EXISTING_CHOICE
     
@@ -500,13 +621,18 @@ if [ ${#EXISTING_ISSUES[@]} -gt 0 ]; then
         echo ""
         echo "Aborted. No changes were made."
         echo ""
-        echo "To destroy existing resources first, run:"
-        echo "  cd terraform && terraform destroy"
+        echo "To manage existing resources:"
+        echo "  • Destroy: cd terraform && terraform destroy"
+        echo "  • Import:  terraform import <resource> <id>"
         exit 0
     fi
+    
+    echo ""
+    echo -e "${YELLOW}You chose to continue. Will analyze impact before making changes.${NC}"
     echo ""
 else
-    echo -e "${GREEN}No existing OpenClaw resources found. Safe to proceed.${NC}"
+    echo -e "${GREEN}✓ No existing OpenClaw resources found in this account.${NC}"
+    echo -e "${GREEN}  Safe to proceed with fresh deployment.${NC}"
     echo ""
 fi
 
@@ -553,8 +679,7 @@ echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━�
 echo -e "${YELLOW}STEP 6/7: Deploying Infrastructure${NC}"
 echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo "Deploying to AWS account $AWS_ACCOUNT_ID in $AWS_REGION..."
-echo "This typically takes 2-3 minutes."
+echo "Preparing deployment to AWS account $AWS_ACCOUNT_ID in $AWS_REGION..."
 echo ""
 
 cd "$SCRIPT_DIR/terraform"
@@ -568,12 +693,94 @@ EOF
 echo "  Initializing Terraform..."
 terraform init -input=false > /dev/null 2>&1
 
-# Plan
-echo "  Planning deployment..."
-terraform plan -input=false -out=tfplan > /dev/null 2>&1
+# Plan and capture output
+echo "  Analyzing deployment plan..."
+echo ""
+
+set +e
+PLAN_OUTPUT=$(terraform plan -input=false -out=tfplan -detailed-exitcode 2>&1)
+PLAN_EXIT=$?
+set -e
+
+# Parse plan results
+ADD_COUNT=$(echo "$PLAN_OUTPUT" | grep -oP '\d+(?= to add)' || echo "0")
+CHANGE_COUNT=$(echo "$PLAN_OUTPUT" | grep -oP '\d+(?= to change)' || echo "0")
+DESTROY_COUNT=$(echo "$PLAN_OUTPUT" | grep -oP '\d+(?= to destroy)' || echo "0")
+
+ADD_COUNT=${ADD_COUNT:-0}
+CHANGE_COUNT=${CHANGE_COUNT:-0}
+DESTROY_COUNT=${DESTROY_COUNT:-0}
+
+echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${BLUE}║                    DEPLOYMENT PLAN                            ║${NC}"
+echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo "  Resources to be CREATED:   $ADD_COUNT"
+echo "  Resources to be MODIFIED:  $CHANGE_COUNT"
+echo "  Resources to be DESTROYED: $DESTROY_COUNT"
+echo ""
+
+# Show what will be created
+if [ "$ADD_COUNT" != "0" ]; then
+    echo -e "${GREEN}Resources to CREATE:${NC}"
+    echo "$PLAN_OUTPUT" | grep -E '^\s+\+.*will be created' | head -20 | while read -r line; do
+        echo "    $line"
+    done
+    echo ""
+fi
+
+# Show what will be changed
+if [ "$CHANGE_COUNT" != "0" ]; then
+    echo -e "${YELLOW}Resources to MODIFY:${NC}"
+    echo "$PLAN_OUTPUT" | grep -E '^\s+~.*will be updated' | head -20 | while read -r line; do
+        echo "    $line"
+    done
+    echo ""
+fi
+
+# Show what will be destroyed - THIS IS CRITICAL
+if [ "$DESTROY_COUNT" != "0" ]; then
+    echo -e "${RED}╔═══════════════════════════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║  ⚠️  WARNING: RESOURCES WILL BE DESTROYED!                    ║${NC}"
+    echo -e "${RED}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "${RED}The following resources will be PERMANENTLY DELETED:${NC}"
+    echo ""
+    echo "$PLAN_OUTPUT" | grep -E '^\s+-.*will be destroyed' | while read -r line; do
+        echo -e "    ${RED}$line${NC}"
+    done
+    echo ""
+    echo -e "${RED}THIS ACTION CANNOT BE UNDONE!${NC}"
+    echo ""
+    echo "Type 'DESTROY' to confirm you want to destroy these resources:"
+    read -p "> " DESTROY_CONFIRM
+    
+    if [ "$DESTROY_CONFIRM" != "DESTROY" ]; then
+        echo ""
+        echo "Aborted. You did not confirm destruction."
+        echo "No changes were made."
+        exit 0
+    fi
+    echo ""
+fi
+
+# Final confirmation
+echo "Summary: $ADD_COUNT to add, $CHANGE_COUNT to change, $DESTROY_COUNT to destroy"
+echo ""
+echo -e "${YELLOW}This will make changes to AWS account $AWS_ACCOUNT_ID${NC}"
+echo ""
+read -p "Do you want to apply these changes? [y/N]: " APPLY_CONFIRM
+
+if [[ ! $APPLY_CONFIRM =~ ^[Yy]$ ]]; then
+    echo ""
+    echo "Aborted. No changes were made."
+    exit 0
+fi
+
+echo ""
+echo "  Applying changes (this takes 2-3 minutes)..."
 
 # Apply
-echo "  Creating AWS resources..."
 terraform apply -auto-approve tfplan
 
 # Get instance ID
