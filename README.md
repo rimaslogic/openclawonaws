@@ -1,112 +1,167 @@
 # OpenClaw on AWS
 
-Deploy [OpenClaw](https://github.com/openclaw/openclaw) AI assistant on AWS with Terraform.
+Deploy [OpenClaw](https://github.com/openclaw/openclaw) AI assistant on AWS.
 
-## 🚀 Two Deployment Options
+## ⚡ Quick Start (5 minutes)
+
+```bash
+git clone https://github.com/rimaslogic/openclawonaws.git
+cd openclawonaws
+./setup.sh
+```
+
+That's it! The wizard handles everything:
+- ✅ Deploys infrastructure
+- ✅ Stores your API keys securely
+- ✅ Starts OpenClaw
+- ✅ Configures Telegram webhook
+
+---
+
+## What You Need
+
+1. **AWS account** with admin access
+2. **Domain name** pointed to AWS (can do after deploy)
+3. **Anthropic API key** from [console.anthropic.com](https://console.anthropic.com)
+4. **Telegram bot token** from [@BotFather](https://t.me/BotFather)
+
+### Prerequisites
+
+```bash
+# macOS
+brew install terraform awscli jq
+
+# Ubuntu/Debian
+sudo apt install terraform awscli jq
+
+# Configure AWS
+aws configure
+```
+
+---
+
+## Deployment Options
 
 | | Simple | Full |
 |--|--------|------|
 | **Cost** | ~$18/month | ~$120/month |
-| **Best for** | Single user | Production/Teams |
-| **Setup** | 30 minutes | 1 hour |
+| **Best for** | Personal use | Production |
+| **Setup** | 5 minutes | 10 minutes |
 | **Security** | Good | Maximum |
 
-### Quick Start
+The wizard asks which one you want.
+
+---
+
+## After Deployment
+
+### 1. Point Your Domain
+
+The setup script shows you the IP or ALB address:
+
+```
+# Simple deployment
+openclaw.example.com → 1.2.3.4 (A record)
+
+# Full deployment  
+openclaw.example.com → abc123.elb.amazonaws.com (CNAME)
+```
+
+### 2. Test It
+
+Message your Telegram bot! 🎉
+
+---
+
+## Useful Commands
 
 ```bash
-# Clone the repo
-git clone https://github.com/rimaslogic/openclawonaws.git
-cd openclawonaws/terraform
+# Check status
+./scripts/status.sh
 
-# Choose your deployment:
-cd simple    # For single user (~$18/month)
-# OR
-cd full      # For production (~$120/month)
+# Connect to instance
+./scripts/connect.sh
 
-# Deploy
+# Update secrets
+./scripts/store-secrets.sh
+
+# Set/reset webhook
+./scripts/set-webhook.sh <bot-token> <domain>
+
+# Destroy everything
+./destroy.sh
+```
+
+---
+
+## Manual Deployment
+
+If you prefer to deploy manually:
+
+```bash
+cd terraform/simple  # or terraform/full
 cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your domain
+# Edit terraform.tfvars
+
 terraform init
 terraform apply
+
+# Then store secrets and start services
+# See terraform/simple/README.md or terraform/full/README.md
 ```
 
 ---
 
-## Option 1: Simple (~$18/month)
+## Architecture
 
-Perfect for personal use with a single Telegram account.
-
+### Simple (~$18/month)
 ```
-Internet → EC2 (Caddy + Let's Encrypt) → OpenClaw
+Internet → EC2 (Caddy TLS) → OpenClaw → Secrets Manager
 ```
 
-**Includes:**
-- EC2 t3.micro with Elastic IP
-- Automatic HTTPS via Caddy
-- Encrypted EBS storage
-- Secrets Manager
-- SSM access (no SSH needed)
-
-[📖 Simple Deployment Guide](terraform/simple/README.md)
+### Full (~$120/month)
+```
+Internet → WAF → ALB → Private EC2 → VPC Endpoints → Secrets Manager
+```
 
 ---
 
-## Option 2: Full (~$120/month)
+## Troubleshooting
 
-Production-grade with maximum security.
+### Can't connect to instance
+```bash
+# Check instance is running
+./scripts/status.sh
 
+# Connect via SSM
+./scripts/connect.sh
 ```
-Internet → WAF → ALB → Private Subnet → EC2
-                              ↓
-                        VPC Endpoints
+
+### OpenClaw not responding
+```bash
+# Connect and check logs
+./scripts/connect.sh
+sudo journalctl -u openclaw -f
+sudo systemctl restart openclaw
 ```
 
-**Includes everything in Simple, plus:**
-- WAF with rate limiting
-- Application Load Balancer
-- Private subnet isolation
-- VPC Endpoints for AWS services
-- 365-day log retention
-- ALB access logging
+### Webhook not working
+```bash
+# Re-set webhook
+./scripts/set-webhook.sh <bot-token> <domain>
 
-[📖 Full Deployment Guide](terraform/full/README.md)
+# Check Caddy/ALB
+curl -I https://your-domain.com/health
+```
 
 ---
 
 ## Documentation
 
-| Document | Description |
-|----------|-------------|
-| [terraform/README.md](terraform/README.md) | Deployment comparison & decision guide |
-| [architecture.md](architecture.md) | Full security architecture |
-| [implementation-path.md](implementation-path.md) | Step-by-step guide |
-| [devops-mcp.md](devops-mcp.md) | AI-powered DevOps automation |
-| [SECURITY-REPORT.md](SECURITY-REPORT.md) | Checkov scan results |
-
----
-
-## Prerequisites
-
-- AWS account
-- Domain name (for HTTPS)
-- Terraform >= 1.5.0
-- AWS CLI configured
-
----
-
-## Security Features
-
-Both deployments include:
-- ✅ Encrypted storage (KMS)
-- ✅ Secrets in AWS Secrets Manager
-- ✅ IMDSv2 required
-- ✅ SSM Session Manager (no SSH)
-
-Full deployment adds:
-- ✅ WAF protection
-- ✅ Private subnet
-- ✅ VPC Endpoints
-- ✅ ALB with access logging
+- [Simple Deployment](terraform/simple/README.md)
+- [Full Deployment](terraform/full/README.md)
+- [Architecture Details](architecture.md)
+- [Security Report](SECURITY-REPORT.md)
 
 ---
 
