@@ -1,27 +1,16 @@
-# OpenClaw on AWS
+# OpenClaw on AWS - Project Overview
 
-## Overview
+## Purpose
 
-Deploying and running OpenClaw on AWS infrastructure with security-first approach.
-
-## Status
-
-🟢 Active — Set up 2026-02-01
+Provide a secure, production-ready template for deploying OpenClaw AI assistant on AWS infrastructure.
 
 ## Goals
 
-- Secure deployment with encryption at rest and in transit
-- Minimal attack surface
-- Cost-efficient infrastructure
-- Best practices compliance
-
-## Architecture
-
-**See:** [architecture.md](architecture.md)
-
-Two options defined:
-- **Full security** (~$72/month) — Private subnet, NAT Gateway, ALB, WAF
-- **Budget-conscious** (~$22-40/month) — Public subnet with hardened security
+- Security-first architecture with encryption at rest and in transit
+- Minimal attack surface (no SSH, SSM-only access)
+- Infrastructure as Code using Terraform
+- Cost-efficient deployment options
+- Comprehensive documentation
 
 ## Key Security Controls
 
@@ -32,39 +21,23 @@ Two options defined:
 - ✅ IAM least privilege
 - ✅ Full audit trail (CloudTrail, VPC Flow Logs)
 
-## Credentials / Secrets
+## Documentation
 
-| Secret | Storage |
-|--------|---------|
-| Anthropic API key | AWS Secrets Manager |
-| Telegram bot token | AWS Secrets Manager |
-| Gateway auth token | AWS Secrets Manager |
+| Document | Description |
+|----------|-------------|
+| [README.md](README.md) | Project overview and quick start |
+| [architecture.md](architecture.md) | Detailed security architecture |
+| [implementation-path.md](implementation-path.md) | End-to-end deployment guide |
+| [devops-mcp.md](devops-mcp.md) | AI-powered DevOps automation |
+| [terraform/README.md](terraform/README.md) | Terraform deployment guide |
 
 ## Cost Estimates
 
 | Tier | Monthly Cost |
 |------|--------------|
-| Full security | ~$72 |
-| Budget-conscious | ~$22-40 |
+| Full security | ~$73 |
+| Budget-conscious | ~$40 |
 
-## Documentation
+## Status
 
-| Document | Description |
-|----------|-------------|
-| [architecture.md](architecture.md) | Security-focused AWS architecture |
-| [implementation-path.md](implementation-path.md) | End-to-end deployment guide |
-| [devops-mcp.md](devops-mcp.md) | AI-powered DevOps automation with AWS MCP servers |
-
-## Next Steps
-
-- [ ] Choose architecture tier (full ~$72/mo vs budget ~$22-40/mo)
-- [ ] Set up AWS account + MFA
-- [x] ~~Install Kiro CLI or configure mcporter for Terraform generation~~ ✅ mcporter configured
-- [ ] Configure AWS CLI credentials
-- [ ] Generate Terraform scripts using MCP servers
-- [ ] Define backup procedures
-- [ ] Create operational runbook
-
-## Notes
-
-*(Running notes, decisions, issues)*
+🟢 Ready for deployment

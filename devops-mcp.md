@@ -1,14 +1,14 @@
 # DevOps MCP Integration
 
-Based on: [Transform DevOps practice with Kiro AI-powered agents](https://aws.amazon.com/blogs/publicsector/transform-devops-practice-with-kiro-ai-powered-agents/)
+AI-powered DevOps automation using AWS Model Context Protocol (MCP) servers.
+
+**Reference:** [Transform DevOps practice with Kiro AI-powered agents](https://aws.amazon.com/blogs/publicsector/transform-devops-practice-with-kiro-ai-powered-agents/)
 
 ## Overview
 
-AWS provides **Model Context Protocol (MCP) servers** that can automate DevOps tasks using AI agents. These can be integrated with OpenClaw or used via Kiro CLI to manage our AWS infrastructure.
+AWS provides **Model Context Protocol (MCP) servers** that enable AI agents to automate DevOps tasks. These can be integrated with OpenClaw or used via Kiro CLI to manage AWS infrastructure.
 
----
-
-## AWS MCP Servers (Available)
+## AWS MCP Servers
 
 | MCP Server | Purpose | Package |
 |------------|---------|---------|
@@ -23,9 +23,9 @@ Source: [github.com/awslabs/mcp](https://github.com/awslabs/mcp)
 
 ---
 
-## Option 1: Use Kiro CLI (Standalone)
+## Option 1: Kiro CLI (Standalone)
 
-Kiro is AWS's agentic AI CLI that uses these MCP servers natively.
+Kiro is AWS's agentic AI CLI that uses MCP servers natively.
 
 ### Installation
 
@@ -75,7 +75,7 @@ cat > .kiro/agents/devops-agent.json << 'EOF'
 EOF
 ```
 
-### Use Cases
+### Usage
 
 ```bash
 kiro-cli chat --agent devops-agent
@@ -89,43 +89,80 @@ kiro-cli chat --agent devops-agent
 
 ---
 
-## Option 2: Integrate MCP with OpenClaw ✅ CONFIGURED
+## Option 2: OpenClaw + mcporter
 
-OpenClaw supports MCP servers via the `mcporter` skill.
+OpenClaw supports MCP servers via the `mcporter` tool.
 
-### Status: INSTALLED
+### Prerequisites
 
-✅ uv/uvx installed (`~/.local/bin`)
-✅ mcporter configured (`config/mcporter.json`)
-✅ All 6 AWS MCP servers added
+```bash
+# Install uv (Python package runner)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source ~/.bashrc  # or restart shell
 
-### Configured Servers
+# Verify
+uvx --version
+```
+
+### Configure MCP Servers
+
+Create `config/mcporter.json` in your OpenClaw workspace:
+
+```json
+{
+  "mcpServers": {
+    "aws-core": {
+      "command": "uvx",
+      "args": ["awslabs.core-mcp-server@latest"],
+      "description": "AWS CLI operations, resource discovery"
+    },
+    "aws-docs": {
+      "command": "uvx",
+      "args": ["awslabs.aws-documentation-mcp-server@latest"],
+      "description": "AWS documentation search and reference"
+    },
+    "aws-pricing": {
+      "command": "uvx",
+      "args": ["awslabs.aws-pricing-mcp-server@latest"],
+      "description": "AWS cost estimates and pricing analysis"
+    },
+    "aws-diagram": {
+      "command": "uvx",
+      "args": ["awslabs.aws-diagram-mcp-server@latest"],
+      "description": "Generate AWS architecture diagrams"
+    },
+    "aws-terraform": {
+      "command": "uvx",
+      "args": ["awslabs.terraform-mcp-server@latest"],
+      "description": "Terraform IaC generation and validation"
+    },
+    "aws-eks": {
+      "command": "uvx",
+      "args": ["awslabs.eks-mcp-server@latest", "--allow-write", "--allow-sensitive-data-access"],
+      "description": "Amazon EKS cluster management"
+    }
+  }
+}
+```
+
+### Verify Configuration
 
 ```bash
 mcporter config list
 ```
 
-| Server | Package | Status |
-|--------|---------|--------|
-| `aws-core` | awslabs.core-mcp-server | ✅ Ready |
-| `aws-docs` | awslabs.aws-documentation-mcp-server | ✅ Ready |
-| `aws-pricing` | awslabs.aws-pricing-mcp-server | ✅ Ready |
-| `aws-diagram` | awslabs.aws-diagram-mcp-server | ✅ Ready |
-| `aws-terraform` | awslabs.terraform-mcp-server | ✅ Ready |
-| `aws-eks` | awslabs.eks-mcp-server | ✅ Ready |
-
 ### Usage Examples
 
 ```bash
-# List available tools from a server
+# List tools from a server
 mcporter list aws-terraform --schema
 
-# Call a specific tool
+# Execute Terraform commands
 mcporter call aws-terraform.ExecuteTerraformCommand \
   command=plan \
-  working_directory=./infrastructure
+  working_directory=./terraform
 
-# Get AWS documentation
+# Search AWS documentation
 mcporter call aws-docs.search query="VPC security best practices"
 
 # Get pricing estimates
@@ -134,7 +171,7 @@ mcporter call aws-pricing.get_pricing service=ec2 region=eu-central-1
 
 ---
 
-## Benefits for OpenClaw AWS Project
+## Benefits for Infrastructure Automation
 
 | Task | MCP Server | Benefit |
 |------|------------|---------|
@@ -146,7 +183,7 @@ mcporter call aws-pricing.get_pricing service=ec2 region=eu-central-1
 
 ---
 
-## Example: Generate OpenClaw Infrastructure
+## Example: Generate Infrastructure
 
 Using Kiro or OpenClaw with MCP:
 
@@ -187,7 +224,7 @@ The MCP servers can:
 ┌─────────────────────────────────────────────────────────────┐
 │  3. Validation Phase                                        │
 │     • Use core-mcp to check existing resources              │
-│     • Validate Terraform plans                              │
+│     • Run Checkov security scan                             │
 └─────────────────────┬───────────────────────────────────────┘
                       ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -199,18 +236,9 @@ The MCP servers can:
 
 ---
 
-## Next Steps
-
-- [ ] Install Kiro CLI locally for Terraform generation
-- [ ] Or configure MCP servers in OpenClaw via mcporter
-- [ ] Use MCP to generate production-ready Terraform scripts
-- [ ] Validate cost estimates before deployment
-
----
-
 ## References
 
 - [AWS MCP Servers](https://github.com/awslabs/mcp)
 - [Kiro Documentation](https://kiro.dev/docs/)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
-- [OpenClaw mcporter skill](/home/clawd/.npm-global/lib/node_modules/openclaw/skills/mcporter/SKILL.md)
+- [OpenClaw Documentation](https://docs.openclaw.ai/)
